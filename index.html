@@ -381,6 +381,7 @@
       <div class="note">الملف فيه 4 أعمدة: <b>الفرع</b> · <b>المخزن</b> · <b>اسم الصنف</b> · <b>الكمية</b>. الأصناف بتظهر للموظف بنفس ترتيب الملف، وكل فرع + مخزن بيبقى طلبية لوحده. اسم الصنف لازم يبقى زي اسمه في نسخة المخزن بالظبط.</div>
       <button class="btn block" id="btnPick" style="margin-top:12px"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 16V4M7 9l5-5 5 5"/><path d="M4 16v4h16v-4"/></svg>اختار ملف الإكسل</button>
       <input type="file" id="xfile" accept=".xlsx,.xls,.csv" class="hidden">
+      <button class="btn ghost block" id="btnSyncCat" style="margin-top:8px">تحديث أصناف نسخة المخزن من البرنامج</button>
     </div>
     <div id="upOut"></div>
   </div>
@@ -1528,6 +1529,11 @@ async function xlsInvoices(list, fname) {
 // ===== رفع ملف الطلبات =====
 // =====================================================================
 $('btnPick').onclick = () => { $('xfile').value = ''; $('xfile').click(); };
+$('btnSyncCat').onclick = async () => {
+  $('upOut').innerHTML = '<div class="box" id="chk"><h3>بنسحب أصناف نسخة المخزن...</h3><div class="note" id="chkT"></div><div class="bar2"><i id="chkB"></i></div></div>';
+  try { await syncCatalog(true); $('chk').innerHTML = '<h3 style="color:var(--ok)">أصناف نسخة المخزن اتحدثت ✓</h3><div class="note">' + esc($('chkT') ? $('chkT').textContent : '') + '</div>'; }
+  catch (err) { $('chk').innerHTML = '<div class="err">' + esc(arErr(err)) + '</div>'; }
+};
 $('xfile').addEventListener('change', async e => {
   const f = e.target.files && e.target.files[0]; if (!f) return;
   const out = $('upOut');
@@ -1565,6 +1571,25 @@ function parseRows(aoa) {
   if (!rows.length) throw new Error('الملف مفيهوش أصناف تحت العناوين');
   return rows;
 }
+// سحب أصناف نسخة المخزن كلها (أول مرة بياخد كام دقيقة) - force = تحديث حتى لو متسحبة قبل كده
+async function syncCatalog(force) {
+  let r = await api('whSync', { status: true });
+  const age = r.sync.done ? (Date.now() - new Date(r.sync.done.replace(' ', 'T')).getTime()) / 36e5 : 1e9;
+  if (!force && r.sync.done && !r.sync.running && age < 24) return true;
+  let first = true, errors = 0;
+  for (;;) {
+    try { r = await api('whSync', { restart: force && first }); errors = 0; }
+    catch (err) { if (++errors >= 4) throw err; await new Promise(ok => setTimeout(ok, 4000)); continue; }
+    first = false;
+    const sy = r.sync;
+    if (!sy.running && sy.done) { if ($('chkT')) $('chkT').textContent = 'اتسحب ' + sy.total + ' صنف ✓'; return true; }
+    const pct = sy.pages ? Math.round(100 * (sy.page - 1) / sy.pages) : 0;
+    if ($('chk')) $('chk').querySelector('h3').textContent = 'بنسحب أصناف نسخة المخزن من البرنامج (أول مرة بتاخد كام دقيقة)...';
+    if ($('chkT')) $('chkT').textContent = (sy.count || 0) + ' صنف' + (sy.pages ? ' · صفحة ' + Math.min(sy.page, sy.pages) + ' من ' + sy.pages : '');
+    if ($('chkB')) $('chkB').style.width = pct + '%';
+    if (!$('chk')) return false;
+  }
+}
 async function checkUpload(rows, fname) {
   const out = $('upOut');
   const bad = rows.filter(r => !r.branch || !r.store || !(r.qty > 0));
@@ -1581,16 +1606,20 @@ async function checkUpload(rows, fname) {
   }
   const names = []; rows.forEach(r => { if (!names.some(n => key(n) === key(r.name))) names.push(r.name); });
   out.innerHTML = head + '<div class="box" id="chk"><h3>بنراجع الأسماء على أصناف نسخة المخزن...</h3><div class="note" id="chkT">0 من ' + names.length + '</div><div class="bar2"><i id="chkB"></i></div></div>';
+  // أول مرة (أو لو القايمة قديمة): نسحب كل أصناف نسخة المخزن من البرنامج
+  try { if (!(await syncCatalog(false))) return; }
+  catch (err) { $('chk').innerHTML = '<div class="err">' + esc(arErr(err)) + '</div><button class="btn ghost block" onclick="checkUpload(st.up, \'' + esc(fname).replace(/'/g, '') + '\')">جرّب تاني</button>'; return; }
+  $('chk').innerHTML = '<h3>بنراجع الأسماء على أصناف نسخة المخزن...</h3><div class="note" id="chkT">0 من ' + names.length + '</div><div class="bar2"><i id="chkB"></i></div>';
   const missing = [];
-  for (let i = 0; i < names.length; i += 40) {
-    const part = names.slice(i, i + 40);
+  for (let i = 0; i < names.length; i += 300) {
+    const part = names.slice(i, i + 300);
     let r, tries = 0;
     for (;;) {
       try { r = await api('whCheckNames', { names: part }); break; }
       catch (err) { if (++tries >= 3) { $('chk').innerHTML = '<div class="err">' + esc(arErr(err)) + '</div><button class="btn ghost block" onclick="checkUpload(st.up, \'' + esc(fname).replace(/'/g, '') + '\')">جرّب تاني</button>'; return; } await new Promise(ok => setTimeout(ok, 3000)); }
     }
     (r.missing || []).forEach(m => missing.push(m));
-    const d = Math.min(names.length, i + 40);
+    const d = Math.min(names.length, i + 300);
     $('chkT').textContent = d + ' من ' + names.length + (missing.length ? ' · ' + missing.length + ' اسم مش موجود' : '');
     $('chkB').style.width = Math.round(100 * d / names.length) + '%';
   }
