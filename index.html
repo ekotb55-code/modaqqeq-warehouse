@@ -428,6 +428,7 @@
     <div class="ctl">
       <button class="cbtn" id="camTorch" aria-label="الفلاش"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2L4 14h7l-1 8 9-12h-7z"/></svg></button>
       <button class="cbtn hidden" id="camZoom" aria-label="تكبير">2x</button>
+      <button class="cbtn hidden" id="camSwitch" aria-label="غيّر الكاميرا" style="width:auto;padding:0 10px"></button>
       <button class="cbtn" id="doneBtn" style="width:auto;padding:0 10px;font-size:12px">اتحضّروا (0)</button>
       <button class="cbtn" id="voiceToggle" aria-label="الصوت"></button>
       <button class="cbtn" id="frameToggle" aria-label="إطار الكلام" style="width:auto;padding:0 10px;font-size:12px"></button>
@@ -1143,6 +1144,56 @@ async function doSave() {
 }
 async function flushSave() { if (st.dirty) { await doSave(); } }
 
+// ---------- الكاميرا: الأساسية لوحدها + تغيير الكاميرا (نفس إعدادات تطبيقات مدقق) ----------
+// الاختيار بيتحفظ على الموبايل (mdqCamDev) ومشترك مع باقي تطبيقات مدقق، ولو «الكاميرا الجديدة» مقفولة
+// من إعدادات مدقق بترجع زي الأول (المتصفح هو اللي بيختار)
+const mdqCam = {
+  list: [], cur: '',
+  old() { try { return localStorage.getItem('flutter.camNew_v1') === 'false'; } catch (e) { return false; } },
+  async backs() {
+    try {
+      const ds = (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === 'videoinput');
+      const back = ds.filter(d => /back|rear|environment|خلف/i.test(d.label || ''));
+      return back.length ? back : ds.filter(d => !/front|user|أمام/i.test(d.label || ''));
+    } catch (e) { return []; }
+  },
+  // المحفوظة، وإلا الأساسية (سامسونج وأغلب أندرويد: «camera2 0»)، وإلا أول واحدة ورا
+  pick(list) {
+    let saved = ''; try { saved = localStorage.getItem('mdqCamDev') || ''; } catch (e) {}
+    let i = list.findIndex(d => d.deviceId === saved);
+    if (i < 0) i = list.findIndex(d => /camera2 0\b/.test(d.label || ''));
+    return list[i < 0 ? 0 : i];
+  },
+  async open(w, h) {
+    const size = { width: { ideal: w }, height: { ideal: h } };
+    const gum = v => navigator.mediaDevices.getUserMedia({ video: Object.assign(v, size), audio: false });
+    let s = await gum({ facingMode: 'environment' });
+    const t0 = s.getVideoTracks()[0];
+    mdqCam.cur = (t0 && t0.getSettings && t0.getSettings().deviceId) || '';
+    if (mdqCam.old()) { mdqCam.list = []; return s; }
+    mdqCam.list = await mdqCam.backs();
+    const want = mdqCam.list.length > 1 ? mdqCam.pick(mdqCam.list) : null;
+    if (want && want.deviceId && want.deviceId !== mdqCam.cur) {
+      s.getTracks().forEach(t => t.stop());
+      try { s = await gum({ deviceId: { exact: want.deviceId } }); mdqCam.cur = want.deviceId; }
+      catch (e) { s = await gum({ facingMode: 'environment' }); }
+    }
+    return s;
+  },
+  // الكاميرا اللي بعدها (بتتحفظ) - بيرجع false لو مفيش غير كاميرا واحدة
+  next() {
+    const l = mdqCam.list; if (l.length < 2) return false;
+    const i = (l.findIndex(d => d.deviceId === mdqCam.cur) + 1) % l.length;
+    try { localStorage.setItem('mdqCamDev', l[i].deviceId); } catch (e) {}
+    return true;
+  },
+  label() {
+    const l = mdqCam.list; if (l.length < 2) return '';
+    const i = l.findIndex(d => d.deviceId === mdqCam.cur);
+    return (i < 0 ? 1 : i + 1) + '/' + l.length;
+  },
+};
+
 // ---------- الكاميرا والباركود ----------
 let stream = null, stopLoop = null, zx = null, track = null;
 function loadZx() {
@@ -1162,8 +1213,10 @@ async function camStart() {
   $('prep').classList.remove('nocam');
   const vid = $('vid');
   try {
-    stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment', width: { ideal: 1920 }, height: { ideal: 1080 } }, audio: false });
+    stream = await mdqCam.open(1920, 1080);
     vid.srcObject = stream;
+    $('camSwitch').classList.toggle('hidden', !mdqCam.label());
+    $('camSwitch').textContent = mdqCam.label();
     await vid.play();
     track = stream.getVideoTracks()[0];
     st.zoomCaps = null; $('camZoom').classList.add('hidden'); $('camZoom').classList.remove('on');
@@ -1224,6 +1277,7 @@ async function setZoom(on) {
   $('camZoom').classList.toggle('on', on);
 }
 $('camZoom').onclick = () => setZoom(!st.zoomOn);
+$('camSwitch').onclick = () => { if (mdqCam.next()) { camStop(); camStart(); } };
 $('camTorch').onclick = async () => {
   if (!track) return;
   try { st.torch = !st.torch; await track.applyConstraints({ advanced: [{ torch: st.torch }] }); }
